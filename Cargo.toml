@@ -1,8 +1,6 @@
 [workspace]
 members = [
-    "programs/*"
-]
-exclude = [
+    "programs/*",
     "jup-sdk"
 ]
 resolver = "2"

@@ -29,7 +29,7 @@ security_txt! {
     policy: "The market will decide whether we pay a bug bounty.",
     source_code: "https://github.com/metaDAOproject/programs",
     source_release: "v0.4",
-    auditors: "Neodyme (v0.3)",
+    auditors: "Neodyme (v0.3), Zenith (v0.4)",
     acknowledgements: "DCF = (CF1 / (1 + r)^1) + (CF2 / (1 + r)^2) + ... (CFn / (1 + r)^n)"
 }
 
@@ -59,6 +59,7 @@ pub mod conditional_vault {
         InitializeConditionalVault::handle(ctx)
     }
 
+    #[access_control(ctx.accounts.validate_split_tokens())]
     pub fn split_tokens<'c: 'info, 'info>(
         ctx: Context<'_, '_, 'c, 'info, InteractWithVault<'info>>,
         amount: u64,
@@ -66,6 +67,7 @@ pub mod conditional_vault {
         InteractWithVault::handle_split_tokens(ctx, amount)
     }
 
+    #[access_control(ctx.accounts.validate_merge_tokens())]
     pub fn merge_tokens<'c: 'info, 'info>(
         ctx: Context<'_, '_, 'c, 'info, InteractWithVault<'info>>,
         amount: u64,

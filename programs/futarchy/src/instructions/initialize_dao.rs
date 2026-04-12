@@ -16,6 +16,8 @@ pub struct InitializeDaoParams {
     pub seconds_per_proposal: u32,
     pub nonce: u64,
     pub initial_spending_limit: Option<InitialSpendingLimit>,
+    pub team_sponsored_pass_threshold_bps: i16,
+    pub team_address: Pubkey,
 }
 
 #[derive(Accounts)]
@@ -25,7 +27,7 @@ pub struct InitializeDao<'info> {
     #[account(
         init,
         payer = payer,
-        seeds = [b"dao", dao_creator.key().as_ref(), params.nonce.to_le_bytes().as_ref()],
+        seeds = [SEED_DAO, dao_creator.key().as_ref(), params.nonce.to_le_bytes().as_ref()],
         bump,
         space = 8 + Dao::INIT_SPACE,
     )]
@@ -68,6 +70,15 @@ pub mod permissionless_account {
 }
 
 impl InitializeDao<'_> {
+    pub fn validate(&self) -> Result<()> {
+        require_keys_neq!(
+            self.base_mint.key(),
+            self.quote_mint.key(),
+            FutarchyError::InvalidMint
+        );
+        Ok(())
+    }
+
     pub fn handle(ctx: Context<Self>, params: InitializeDaoParams) -> Result<()> {
         let InitializeDaoParams {
             twap_initial_observation,
@@ -80,13 +91,15 @@ impl InitializeDao<'_> {
             seconds_per_proposal,
             nonce,
             initial_spending_limit,
+            team_sponsored_pass_threshold_bps,
+            team_address,
         } = params;
 
         let dao = &mut ctx.accounts.dao;
 
         let creator_key = ctx.accounts.dao_creator.key();
         let dao_seeds = &[
-            b"dao".as_ref(),
+            SEED_DAO,
             creator_key.as_ref(),
             &nonce.to_le_bytes(),
             &[ctx.bumps.dao],
@@ -206,6 +219,8 @@ impl InitializeDao<'_> {
                 amm_base_vault: ctx.accounts.futarchy_amm_base_vault.key(),
                 amm_quote_vault: ctx.accounts.futarchy_amm_quote_vault.key(),
             },
+            team_sponsored_pass_threshold_bps,
+            team_address,
         });
 
         dao.invariant()?;
@@ -222,12 +237,15 @@ impl InitializeDao<'_> {
             seconds_per_proposal: dao.seconds_per_proposal,
             twap_initial_observation: dao.twap_initial_observation,
             twap_max_observation_change_per_update: dao.twap_max_observation_change_per_update,
+            twap_start_delay_seconds: dao.twap_start_delay_seconds,
             min_quote_futarchic_liquidity: dao.min_quote_futarchic_liquidity,
             min_base_futarchic_liquidity: dao.min_base_futarchic_liquidity,
             base_to_stake: dao.base_to_stake,
             initial_spending_limit: dao.initial_spending_limit.clone(),
             squads_multisig: dao.squads_multisig,
             squads_multisig_vault: dao.squads_multisig_vault,
+            team_sponsored_pass_threshold_bps: dao.team_sponsored_pass_threshold_bps,
+            team_address: dao.team_address,
         });
 
         Ok(())

@@ -3,7 +3,7 @@ use super::*;
 #[derive(Accounts)]
 #[event_cpi]
 pub struct LaunchProposal<'info> {
-    #[account(mut, has_one = dao, has_one = quote_vault, has_one = base_vault)]
+    #[account(mut, has_one = dao, has_one = quote_vault, has_one = base_vault, has_one = squads_proposal)]
     pub proposal: Box<Account<'info, Proposal>>,
     pub base_vault: Box<Account<'info, ConditionalVault>>,
     pub quote_vault: Box<Account<'info, ConditionalVault>>,
@@ -15,7 +15,7 @@ pub struct LaunchProposal<'info> {
     pub fail_base_mint: Box<Account<'info, Mint>>,
     #[account(address = quote_vault.conditional_token_mints[0])]
     pub fail_quote_mint: Box<Account<'info, Mint>>,
-    #[account(mut)]
+    #[account(mut, has_one = squads_multisig)]
     pub dao: Box<Account<'info, Dao>>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -27,6 +27,10 @@ pub struct LaunchProposal<'info> {
     pub amm_fail_base_vault: Box<Account<'info, TokenAccount>>,
     #[account(init_if_needed, payer = payer, associated_token::mint = fail_quote_mint, associated_token::authority = dao)]
     pub amm_fail_quote_vault: Box<Account<'info, TokenAccount>>,
+    #[account(seeds = [squads_multisig_program::SEED_PREFIX, squads_multisig_program::SEED_MULTISIG, dao.key().as_ref()], bump, seeds::program = squads_multisig_program::ID)]
+    pub squads_multisig: Account<'info, squads_multisig_program::Multisig>,
+    #[account(owner = squads_multisig_program::ID)]
+    pub squads_proposal: Account<'info, squads_multisig_program::Proposal>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -42,14 +46,22 @@ impl LaunchProposal<'_> {
 
         require_keys_eq!(self.proposal.dao, self.dao.key());
 
-        // Check if sufficient stake has been accumulated
-        if let ProposalState::Draft { amount_staked } = self.proposal.state {
-            require_gte!(
-                amount_staked,
-                self.dao.base_to_stake,
-                FutarchyError::InsufficientStakeToLaunch
-            );
+        // If the proposal is not team sponsored, check if sufficient stake has been accumulated
+        if !self.proposal.is_team_sponsored {
+            if let ProposalState::Draft { amount_staked } = self.proposal.state {
+                require_gte!(
+                    amount_staked,
+                    self.dao.base_to_stake,
+                    FutarchyError::InsufficientStakeToLaunch
+                );
+            }
         }
+
+        // Ensure the squads proposal is not invalidated by a previous config transaction
+        require_gt!(
+            self.squads_proposal.transaction_index,
+            self.squads_multisig.stale_transaction_index
+        );
 
         Ok(())
     }
@@ -72,6 +84,8 @@ impl LaunchProposal<'_> {
             amm_pass_quote_vault: _,
             amm_fail_base_vault: _,
             amm_fail_quote_vault: _,
+            squads_multisig: _,
+            squads_proposal: _,
             system_program: _,
             token_program: _,
             associated_token_program: _,
@@ -90,6 +104,11 @@ impl LaunchProposal<'_> {
 
         let base_to_lp = spot.base_reserves / 2;
         let quote_to_lp = spot.quote_reserves / 2;
+
+        // Prevent launching proposals with zero reserves, which would permanently
+        // freeze the DAO (no swaps possible, finalize_proposal fails, no recovery path)
+        require_gt!(base_to_lp, 0, FutarchyError::InsufficientLiquidity);
+        require_gt!(quote_to_lp, 0, FutarchyError::InsufficientLiquidity);
 
         spot.base_reserves -= base_to_lp;
         spot.quote_reserves -= quote_to_lp;
@@ -135,8 +154,11 @@ impl LaunchProposal<'_> {
             },
         };
 
-        // Update proposal state to Pending
+        // Update proposal state to Pending and set timestamp enqueued
         proposal.state = ProposalState::Pending;
+        proposal.timestamp_enqueued = clock.unix_timestamp;
+        // Additionally, set the duration once more in case it was updated since the proposal was created
+        proposal.duration_in_seconds = dao.seconds_per_proposal;
 
         dao.seq_num += 1;
 
@@ -144,6 +166,7 @@ impl LaunchProposal<'_> {
             common: CommonFields::new(&clock, dao.seq_num),
             proposal: proposal.key(),
             dao: dao.key(),
+            timestamp_enqueued: proposal.timestamp_enqueued,
             total_staked,
             post_amm_state: dao.amm.clone(),
         });

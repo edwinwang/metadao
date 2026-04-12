@@ -1,11 +1,14 @@
 use super::*;
 
+pub const SEED_PROPOSAL: &[u8] = b"proposal";
+
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug, InitSpace)]
 pub enum ProposalState {
     Draft { amount_staked: u64 },
     Pending,
     Passed,
     Failed,
+    Removed,
 }
 
 impl std::fmt::Display for ProposalState {
@@ -32,4 +35,5 @@ pub struct Proposal {
     pub pass_quote_mint: Pubkey,
     pub fail_base_mint: Pubkey,
     pub fail_quote_mint: Pubkey,
+    pub is_team_sponsored: bool,
 }

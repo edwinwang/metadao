@@ -109,22 +109,25 @@ impl FinalizeProposal<'_> {
 
         let squads_proposal_key = squads_proposal.key();
         let proposal_seeds = &[
-            b"proposal",
+            SEED_PROPOSAL,
             squads_proposal_key.as_ref(),
             &[proposal.pda_bump],
         ];
         let proposal_signer = &[&proposal_seeds[..]];
 
-        let calculate_twap = |amm: &Pool| -> Result<u128> {
-            let seconds_passed = amm.oracle.last_updated_timestamp - proposal.timestamp_enqueued;
+        let clock = Clock::get()?;
 
-            require_gte!(
-                seconds_passed,
-                proposal.duration_in_seconds as i64,
+        let calculate_twap = |amm: &Pool| -> Result<u128> {
+            let twap_start_timestamp =
+                amm.oracle.created_at_timestamp + amm.oracle.start_delay_seconds as i64;
+
+            require_gt!(
+                amm.oracle.last_updated_timestamp,
+                twap_start_timestamp,
                 FutarchyError::MarketsTooYoung
             );
 
-            amm.get_twap()
+            amm.get_twap(clock.unix_timestamp)
         };
 
         let PoolState::Futarchy {
@@ -139,11 +142,18 @@ impl FinalizeProposal<'_> {
         let pass_market_twap = calculate_twap(&pass)?;
         let fail_market_twap = calculate_twap(&fail)?;
 
+        let threshold_bps = if proposal.is_team_sponsored {
+            dao.team_sponsored_pass_threshold_bps
+        } else {
+            // Thanks to invariants this will never error - still it's better to be safe here.
+            i16::try_from(dao.pass_threshold_bps).map_err(|_| FutarchyError::CastingOverflow)?
+        };
+
         // this can't overflow because each twap can only be MAX_PRICE (~1e31),
         // MAX_BPS + pass_threshold_bps is at most 1e5, and a u128 can hold
-        // 1e38. still, saturate
-        let threshold = fail_market_twap
-            .saturating_mul(MAX_BPS.saturating_add(dao.pass_threshold_bps).into())
+        // 1e38
+
+        let threshold = fail_market_twap * u128::try_from(MAX_BPS as i16 + threshold_bps).unwrap()
             / MAX_BPS as u128;
 
         let (new_proposal_state, payout_numerators) = if pass_market_twap > threshold {
@@ -169,7 +179,7 @@ impl FinalizeProposal<'_> {
 
         let dao_nonce = &dao.nonce.to_le_bytes();
         let dao_creator_key = &dao.dao_creator.as_ref();
-        let dao_seeds = &[b"dao".as_ref(), dao_creator_key, dao_nonce, &[dao.pda_bump]];
+        let dao_seeds = &[SEED_DAO, dao_creator_key, dao_nonce, &[dao.pda_bump]];
         let dao_signer = &[&dao_seeds[..]];
 
         if new_proposal_state == ProposalState::Passed {
@@ -191,6 +201,19 @@ impl FinalizeProposal<'_> {
             spot.base_protocol_fee_balance += pass.base_protocol_fee_balance;
             spot.quote_protocol_fee_balance += pass.quote_protocol_fee_balance;
         } else {
+            squads_multisig_program::cpi::proposal_reject(
+                CpiContext::new_with_signer(
+                    squads_multisig_program.to_account_info(),
+                    squads_multisig_program::cpi::accounts::ProposalVote {
+                        proposal: squads_proposal.to_account_info(),
+                        multisig: squads_multisig.to_account_info(),
+                        member: dao.to_account_info(),
+                    },
+                    dao_signer,
+                ),
+                squads_multisig_program::ProposalVoteArgs { memo: None },
+            )?;
+
             spot.base_reserves += fail.base_reserves;
             spot.quote_reserves += fail.quote_reserves;
             spot.base_protocol_fee_balance += fail.base_protocol_fee_balance;
@@ -249,8 +272,6 @@ impl FinalizeProposal<'_> {
 
         dao.seq_num += 1;
 
-        let clock = Clock::get()?;
-
         emit_cpi!(FinalizeProposalEvent {
             common: CommonFields::new(&clock, dao.seq_num),
             proposal: proposal.key(),
@@ -262,6 +283,7 @@ impl FinalizeProposal<'_> {
             squads_proposal: squads_proposal.key(),
             squads_multisig: dao.squads_multisig,
             post_amm_state: dao.amm.clone(),
+            is_team_sponsored: proposal.is_team_sponsored,
         });
 
         Ok(())

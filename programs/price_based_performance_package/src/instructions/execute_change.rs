@@ -1,9 +1,10 @@
 use crate::{
     ChangeExecuted, ChangeRequest, ChangeType, CommonFields, PerformancePackage,
-    PriceBasedPerformancePackageError, ProposerType,
+    PerformancePackageState, PriceBasedPerformancePackageError, ProposerType,
 };
 use anchor_lang::prelude::*;
 
+#[event_cpi]
 #[derive(Accounts)]
 pub struct ExecuteChange<'info> {
     #[account(
@@ -42,12 +43,32 @@ impl<'info> ExecuteChange<'info> {
             return Err(PriceBasedPerformancePackageError::UnauthorizedChangeRequest.into());
         }
 
+        if let ChangeType::Recipient { new_recipient } = &self.change_request.change_type {
+            require_keys_neq!(
+                *new_recipient,
+                self.performance_package.performance_package_authority,
+                PriceBasedPerformancePackageError::RecipientAuthorityMustDiffer
+            );
+        }
+
         Ok(())
     }
 
     pub fn handle(ctx: Context<Self>) -> Result<()> {
         let performance_package = &mut ctx.accounts.performance_package;
         let change_request = &ctx.accounts.change_request;
+
+        // Disallow oracle changes while in Unlocking state to prevent TWAP corruption.
+        // This is checked here (in addition to propose_change) because a change request
+        // could have been proposed before start_unlock was called.
+        if matches!(change_request.change_type, ChangeType::Oracle { .. })
+            && matches!(
+                performance_package.state,
+                PerformancePackageState::Unlocking { .. }
+            )
+        {
+            return Err(PriceBasedPerformancePackageError::InvalidPerformancePackageState.into());
+        }
 
         // Apply the change based on type
         match &change_request.change_type {
@@ -62,7 +83,7 @@ impl<'info> ExecuteChange<'info> {
         performance_package.seq_num += 1;
         // Emit event
         let clock = Clock::get()?;
-        emit!(ChangeExecuted {
+        emit_cpi!(ChangeExecuted {
             common: CommonFields::new(&clock, performance_package.seq_num),
             performance_package: performance_package.key(),
             change_request: change_request.key(),

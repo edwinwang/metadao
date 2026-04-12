@@ -268,16 +268,16 @@ impl PoolState {
 
 #[derive(Default, Clone, Copy, Debug, AnchorDeserialize, AnchorSerialize, InitSpace)]
 pub struct TwapOracle {
-    /// Running sum of slots_per_last_update * last_observation.
+    /// Running sum of seconds_since_last_update * last_observation.
     ///
     /// Assuming latest observations are as big as possible (u64::MAX * 1e12),
-    /// we can store 18 million slots worth of observations, which turns out to
-    /// be ~85 days worth of slots.
+    /// we can store 18 million seconds worth of observations, which turns out to
+    /// be ~213 days.
     ///
     /// Assuming that latest observations are 100x smaller than they could theoretically
-    /// be, we can store 8500 days (23 years) worth of them. Even this is a very
+    /// be, we can store ~57 years worth of them. Even this is a very
     /// very conservative assumption - META/USDC prices should be between 1e9 and
-    /// 1e15, which would overflow after 1e15 years worth of slots.
+    /// 1e15, which would overflow after 1e15 years.
     ///
     /// So in the case of an overflow, the aggregator rolls back to 0. It's the
     /// client's responsibility to sanity check the assets or to handle an
@@ -400,13 +400,13 @@ impl Pool {
             let effective_last_updated_timestamp =
                 oracle.last_updated_timestamp.max(twap_start_timestamp);
 
-            let slot_difference: u128 = (current_timestamp - effective_last_updated_timestamp)
+            let time_difference: u128 = (current_timestamp - effective_last_updated_timestamp)
                 .try_into()
                 .unwrap();
 
-            // if this saturates, the aggregator will wrap back to 0, so this value doesn't
-            // really matter. we just can't panic.
-            let weighted_observation = new_observation.saturating_mul(slot_difference);
+            // wrapping_mul ensures we don't panic in case of overflow
+            // Theoretically, wrapping can occur, but it's astronomically unlikely
+            let weighted_observation = last_observation.wrapping_mul(time_difference);
 
             oracle.aggregator.wrapping_add(weighted_observation)
         };
@@ -449,17 +449,25 @@ impl Pool {
     }
 
     /// Returns the time-weighted average price since market creation
-    pub fn get_twap(&self) -> Result<u128> {
+    pub fn get_twap(&self, current_timestamp: i64) -> Result<u128> {
         let start_timestamp =
             self.oracle.created_at_timestamp + self.oracle.start_delay_seconds as i64;
 
         require_gt!(self.oracle.last_updated_timestamp, start_timestamp);
-        let seconds_passed = (self.oracle.last_updated_timestamp - start_timestamp) as u128;
+
+        let seconds_passed = (current_timestamp - start_timestamp) as u128;
 
         require_neq!(seconds_passed, 0);
         require_neq!(self.oracle.aggregator, 0);
 
-        Ok(self.oracle.aggregator / seconds_passed)
+        // include the final interval that hasn't been accumulated yet
+        let final_interval = (current_timestamp - self.oracle.last_updated_timestamp) as u128;
+        // wrapping_mul ensures we don't panic in case of overflow
+        // Theoretically, wrapping can occur, but it's astronomically unlikely
+        let final_contribution = self.oracle.last_observation.wrapping_mul(final_interval);
+        let total_aggregator = self.oracle.aggregator.wrapping_add(final_contribution);
+
+        Ok(total_aggregator / seconds_passed)
     }
 }
 
@@ -509,13 +517,13 @@ impl Pool {
         require_neq!(input_reserve, 0);
         require_neq!(output_reserve, 0);
 
-        let input_amount_with_lp_fee =
+        let input_amount_after_lp_fee =
             input_amount_after_protocol_fee as u128 * (MAX_BPS - LP_TAKER_FEE_BPS) as u128;
 
-        let numerator = input_amount_with_lp_fee * output_reserve as u128;
+        let numerator = input_amount_after_lp_fee * output_reserve as u128;
 
         let denominator =
-            (input_reserve as u128 * MAX_BPS as u128) + input_amount_with_lp_fee as u128;
+            (input_reserve as u128 * MAX_BPS as u128) + input_amount_after_lp_fee as u128;
 
         let output_amount = (numerator / denominator) as u64;
 
@@ -583,8 +591,8 @@ impl Pool {
     /// Get the number of base and quote tokens withdrawable from a position
     pub fn get_base_and_quote_withdrawable(
         &self,
-        lp_tokens: u64,
-        lp_total_supply: u64,
+        lp_tokens: u128,
+        lp_total_supply: u128,
     ) -> (u64, u64) {
         (
             self.get_base_withdrawable(lp_tokens, lp_total_supply),
@@ -593,14 +601,14 @@ impl Pool {
     }
 
     /// Get the number of base tokens withdrawable from a position
-    pub fn get_base_withdrawable(&self, lp_tokens: u64, lp_total_supply: u64) -> u64 {
+    pub fn get_base_withdrawable(&self, lp_tokens: u128, lp_total_supply: u128) -> u64 {
         // must fit back into u64 since `lp_tokens` <= `lp_total_supply`
-        ((lp_tokens as u128 * self.base_reserves as u128) / lp_total_supply as u128) as u64
+        ((lp_tokens * self.base_reserves as u128) / lp_total_supply) as u64
     }
 
     /// Get the number of quote tokens withdrawable from a position
-    pub fn get_quote_withdrawable(&self, lp_tokens: u64, lp_total_supply: u64) -> u64 {
-        ((lp_tokens as u128 * self.quote_reserves as u128) / lp_total_supply as u128) as u64
+    pub fn get_quote_withdrawable(&self, lp_tokens: u128, lp_total_supply: u128) -> u64 {
+        ((lp_tokens * self.quote_reserves as u128) / lp_total_supply) as u64
     }
 }
 
@@ -666,6 +674,15 @@ pub fn arbitrage_after_spot_swap(
         } else {
             break;
         }
+    }
+
+    // No profitable arbitrage found — skip the feeless swaps to save compute
+    if best_input_amount == 0 {
+        return Ok(ArbitrageResult {
+            spot_profit: 0,
+            pass_profit: 0,
+            fail_profit: 0,
+        });
     }
 
     let final_spot_output = spot
@@ -787,6 +804,15 @@ pub fn arbitrage_after_conditional_swap(
         } else {
             unreachable!()
         }
+    }
+
+    // No profitable arbitrage found — skip the feeless swaps to save compute
+    if best_arb_input_amount == 0 {
+        return Ok(ArbitrageResult {
+            spot_profit: 0,
+            pass_profit: 0,
+            fail_profit: 0,
+        });
     }
 
     let final_pass_output = pass

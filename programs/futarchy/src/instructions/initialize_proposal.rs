@@ -7,12 +7,13 @@ pub struct InitializeProposal<'info> {
         init,
         payer = payer,
         space = 8 + Proposal::INIT_SPACE,
-        seeds = [b"proposal", squads_proposal.key().as_ref()],
+        seeds = [SEED_PROPOSAL, squads_proposal.key().as_ref()],
         bump
     )]
     pub proposal: Box<Account<'info, Proposal>>,
     pub squads_proposal: Box<Account<'info, squads_multisig_program::Proposal>>,
-    #[account(mut)]
+    pub squads_multisig: Box<Account<'info, squads_multisig_program::Multisig>>,
+    #[account(mut, has_one = squads_multisig)]
     pub dao: Box<Account<'info, Dao>>,
     #[account(
         constraint = question.oracle == proposal.key()
@@ -52,6 +53,12 @@ impl InitializeProposal<'_> {
             }
         }
 
+        // Ensure the squads proposal is not invalidated by a previous config transaction
+        require_gt!(
+            self.squads_proposal.transaction_index,
+            self.squads_multisig.stale_transaction_index
+        );
+
         // Should never be the case because the oracle is the proposal account, and you can't re-initialize a proposal
         assert!(!self.question.is_resolved());
 
@@ -65,6 +72,7 @@ impl InitializeProposal<'_> {
             question,
             proposal,
             squads_proposal,
+            squads_multisig: _,
             dao,
             proposer,
             payer: _,
@@ -81,7 +89,7 @@ impl InitializeProposal<'_> {
             number: dao.proposal_count,
             squads_proposal: squads_proposal.key(),
             proposer: proposer.key(),
-            timestamp_enqueued: clock.unix_timestamp,
+            timestamp_enqueued: 0,
             state: ProposalState::Draft { amount_staked: 0 },
             base_vault: base_vault.key(),
             quote_vault: quote_vault.key(),
@@ -93,6 +101,7 @@ impl InitializeProposal<'_> {
             fail_base_mint: base_vault.conditional_token_mints[0],
             pass_quote_mint: quote_vault.conditional_token_mints[1],
             fail_quote_mint: quote_vault.conditional_token_mints[0],
+            is_team_sponsored: false,
         });
 
         dao.seq_num += 1;

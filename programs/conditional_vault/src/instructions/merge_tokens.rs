@@ -1,6 +1,14 @@
 use super::*;
 
 impl<'info, 'c: 'info> InteractWithVault<'info> {
+    pub fn validate_merge_tokens(&self) -> Result<()> {
+        require!(
+            !self.question.is_resolved(),
+            VaultError::QuestionAlreadyResolved
+        );
+        Ok(())
+    }
+
     pub fn handle_merge_tokens(ctx: Context<'_, '_, 'c, 'info, Self>, amount: u64) -> Result<()> {
         let accs = &ctx.accounts;
 
@@ -103,11 +111,9 @@ impl<'info, 'c: 'info> InteractWithVault<'info> {
 
         ctx.accounts.vault.seq_num += 1;
 
+        let clock = Clock::get()?;
         emit_cpi!(MergeTokensEvent {
-            common: CommonFields {
-                slot: Clock::get()?.slot,
-                unix_timestamp: Clock::get()?.unix_timestamp,
-            },
+            common: CommonFields::new(&clock),
             user: ctx.accounts.authority.key(),
             vault: ctx.accounts.vault.key(),
             amount,

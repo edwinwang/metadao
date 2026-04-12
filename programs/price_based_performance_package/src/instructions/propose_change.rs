@@ -1,6 +1,6 @@
 use crate::{
-    ChangeProposed, ChangeRequest, ChangeType, PerformancePackage,
-    PriceBasedPerformancePackageError, ProposerType,
+    ChangeProposed, ChangeRequest, ChangeType, CommonFields, PerformancePackage,
+    PerformancePackageState, PriceBasedPerformancePackageError, ProposerType,
 };
 use anchor_lang::prelude::*;
 
@@ -36,12 +36,22 @@ pub struct ProposeChange<'info> {
 }
 
 impl<'info> ProposeChange<'info> {
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self, params: &ProposeChangeParams) -> Result<()> {
         if self.proposer.key() != self.performance_package.recipient
             && self.proposer.key() != self.performance_package.performance_package_authority
         {
             msg!("proposer ({}) is not the token recipient ({}) or performance package authority ({})", self.proposer.key(), self.performance_package.recipient, self.performance_package.performance_package_authority);
             return Err(PriceBasedPerformancePackageError::UnauthorizedChangeRequest.into());
+        }
+
+        // Disallow oracle changes while in Unlocking state to prevent TWAP corruption
+        if matches!(params.change_type, ChangeType::Oracle { .. })
+            && matches!(
+                self.performance_package.state,
+                PerformancePackageState::Unlocking { .. }
+            )
+        {
+            return Err(PriceBasedPerformancePackageError::InvalidPerformancePackageState.into());
         }
 
         Ok(())
@@ -82,8 +92,11 @@ impl<'info> ProposeChange<'info> {
             pda_bump: ctx.bumps.change_request,
         });
 
+        performance_package.seq_num += 1;
+
         // Emit event
-        emit!(ChangeProposed {
+        emit_cpi!(ChangeProposed {
+            common: CommonFields::new(&clock, performance_package.seq_num),
             locker: performance_package.key(),
             change_request: change_request.key(),
             proposer: proposer.key(),

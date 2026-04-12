@@ -4,6 +4,10 @@ import {
   PublicKey,
   TransactionMessage,
 } from "@solana/web3.js";
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import { expectError, setupBasicDao } from "../../utils.js";
 import { BN } from "bn.js";
 import { assert } from "chai";
@@ -59,7 +63,20 @@ export default function suite() {
         market: "pass",
         swapType: "buy",
         inputAmount: new BN(10 * 10 ** 6), // 1 USDC
+        minOutputAmount: new BN(0),
       })
+      .preInstructions([
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.payer.publicKey,
+          getAssociatedTokenAddressSync(
+            passBaseMint,
+            this.payer.publicKey,
+            true,
+          ),
+          this.payer.publicKey,
+          passBaseMint,
+        ),
+      ])
       .rpc();
 
     const postAmmState = (await this.futarchy.getDao(dao)).amm;
@@ -85,7 +102,7 @@ export default function suite() {
     );
     assert.equal(
       postAmmState.state.futarchy.pass.quoteProtocolFeeBalance.toString(),
-      "25000",
+      "50000",
     ); // 2.5 cent fee on $100 swap
     assert.equal(
       postAmmState.state.futarchy.pass.baseProtocolFeeBalance.toString(),
@@ -102,7 +119,7 @@ export default function suite() {
 
     // I ran the math by hand assuming 50k reserves on each side and got these results
     assert.equal(postPassQuoteBalance, 40_000_000n);
-    assert.equal(postPassBaseBalance, 9_948_082n);
+    assert.equal(postPassBaseBalance, 9_948_020n);
 
     // now we do a swap that should trigger arbitrage
 
@@ -115,7 +132,20 @@ export default function suite() {
         market: "fail",
         swapType: "buy",
         inputAmount: new BN(10 * 10 ** 6), // 1 META
+        minOutputAmount: new BN(0),
       })
+      .preInstructions([
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.payer.publicKey,
+          getAssociatedTokenAddressSync(
+            failBaseMint,
+            this.payer.publicKey,
+            true,
+          ),
+          this.payer.publicKey,
+          failBaseMint,
+        ),
+      ])
       .rpc();
 
     const postFailQuoteBalance = await this.getTokenBalance(
@@ -128,7 +158,7 @@ export default function suite() {
     );
 
     assert.equal(postFailQuoteBalance, 40_000_000n);
-    assert.equal(postFailBaseBalance, 9_948_082n + 991n); // extra profit
+    assert.equal(postFailBaseBalance, 9_948_020n + 988n); // extra profit
   });
 
   it("fails when user has insufficient balance", async function () {
@@ -143,6 +173,13 @@ export default function suite() {
           },
         ],
       });
+
+    const { passBaseMint } = this.futarchy.getProposalPdas(
+      proposal,
+      META,
+      USDC,
+      dao,
+    );
 
     // Split some tokens to have conditional tokens to trade
     await this.conditionalVault
@@ -164,7 +201,20 @@ export default function suite() {
         market: "pass",
         swapType: "buy",
         inputAmount: new BN(1000 * 10 ** 6), // 1000 USDC (more than we have)
+        minOutputAmount: new BN(0),
       })
+      .preInstructions([
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.payer.publicKey,
+          getAssociatedTokenAddressSync(
+            passBaseMint,
+            this.payer.publicKey,
+            true,
+          ),
+          this.payer.publicKey,
+          passBaseMint,
+        ),
+      ])
       .rpc()
       .then(callbacks[0], callbacks[1]);
   });
@@ -182,6 +232,13 @@ export default function suite() {
         ],
       });
 
+    const { passQuoteMint } = this.futarchy.getProposalPdas(
+      proposal,
+      META,
+      USDC,
+      dao,
+    );
+
     // Split some tokens to have conditional tokens to trade
     await this.conditionalVault
       .splitTokensIx(question, baseVault, META, new BN(5 * 10 ** 6), 2)
@@ -198,9 +255,6 @@ export default function suite() {
         inputAmount: new BN(100 * 10 ** 6),
       })
       .rpc();
-
-    // Ensure user has USDC token account for input (already created in beforeEach)
-    // await this.createTokenAccount(USDC, this.payer.publicKey);
 
     // Finalize the proposal first
     await this.futarchy
@@ -227,7 +281,20 @@ export default function suite() {
         market: "pass",
         swapType: "sell",
         inputAmount: new BN(1 * 10 ** 6),
+        minOutputAmount: new BN(0),
       })
+      .preInstructions([
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.payer.publicKey,
+          getAssociatedTokenAddressSync(
+            passQuoteMint,
+            this.payer.publicKey,
+            true,
+          ),
+          this.payer.publicKey,
+          passQuoteMint,
+        ),
+      ])
       .rpc()
       .then(callbacks[0], callbacks[1]);
   });
@@ -245,13 +312,17 @@ export default function suite() {
         ],
       });
 
+    const { passQuoteMint } = this.futarchy.getProposalPdas(
+      proposal,
+      META,
+      USDC,
+      dao,
+    );
+
     // Split some tokens to have conditional tokens to trade
     await this.conditionalVault
       .splitTokensIx(question, baseVault, META, new BN(5 * 10 ** 6), 2)
       .rpc();
-
-    // Ensure user has USDC token account for input (already created in beforeEach)
-    // await this.createTokenAccount(USDC, this.payer.publicKey);
 
     const callbacks = expectError(
       "SwapSlippageExceeded",
@@ -270,6 +341,18 @@ export default function suite() {
         inputAmount: new BN(1 * 10 ** 6), // 1 META
         minOutputAmount: new BN(1000 * 10 ** 6), // Expect 1000 USDC (unrealistic)
       })
+      .preInstructions([
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.payer.publicKey,
+          getAssociatedTokenAddressSync(
+            passQuoteMint,
+            this.payer.publicKey,
+            true,
+          ),
+          this.payer.publicKey,
+          passQuoteMint,
+        ),
+      ])
       .rpc()
       .then(callbacks[0], callbacks[1]);
   });

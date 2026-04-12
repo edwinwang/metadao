@@ -4,7 +4,6 @@ use anchor_lang::Discriminator;
 use squads_multisig_program::program::SquadsMultisigProgram;
 
 #[derive(Accounts)]
-#[event_cpi]
 pub struct ExecuteSpendingLimitChange<'info> {
     #[account(
         mut, has_one = dao, has_one = squads_proposal,
@@ -25,6 +24,10 @@ impl<'info, 'c: 'info> ExecuteSpendingLimitChange<'info> {
     pub fn validate(&self) -> Result<()> {
         require_eq!(self.proposal.state, ProposalState::Passed);
 
+        if !matches!(self.dao.amm.state, PoolState::Spot { .. }) {
+            return Err(FutarchyError::PoolNotInSpotState.into());
+        }
+
         Ok(())
     }
 
@@ -36,8 +39,6 @@ impl<'info, 'c: 'info> ExecuteSpendingLimitChange<'info> {
             squads_multisig,
             squads_multisig_program,
             vault_transaction,
-            event_authority: _,
-            program: _,
         } = ctx.accounts;
 
         let message = &vault_transaction.message;
@@ -69,7 +70,7 @@ impl<'info, 'c: 'info> ExecuteSpendingLimitChange<'info> {
 
         let dao_nonce = &dao.nonce.to_le_bytes();
         let dao_creator_key = &dao.dao_creator.as_ref();
-        let dao_seeds = &[b"dao".as_ref(), dao_creator_key, dao_nonce, &[dao.pda_bump]];
+        let dao_seeds = &[SEED_DAO, dao_creator_key, dao_nonce, &[dao.pda_bump]];
         let dao_signer = &[&dao_seeds[..]];
 
         squads_multisig_program::cpi::vault_transaction_execute(

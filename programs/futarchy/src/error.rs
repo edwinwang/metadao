@@ -32,7 +32,7 @@ pub enum FutarchyError {
     PassThresholdTooHigh,
     #[msg("Question must have exactly 2 outcomes for binary futarchy")]
     QuestionMustBeBinary,
-    #[msg("Squads proposal must be in Draft status")]
+    #[msg("Squads proposal must be in Active status")]
     InvalidSquadsProposalStatus,
     #[msg("Casting overflow. If you're seeing this, please report this")]
     CastingOverflow,
@@ -68,4 +68,14 @@ pub enum FutarchyError {
     ProposalNotActive,
     #[msg("This Squads transaction should only contain calls to update spending limits")]
     InvalidTransaction,
+    #[msg("Proposal has already been sponsored")]
+    ProposalAlreadySponsored,
+    #[msg("Team sponsored pass threshold must be between -10% and 10%")]
+    InvalidTeamSponsoredPassThreshold,
+    #[msg("Target K must be greater than the current K")]
+    InvalidTargetK,
+    #[msg("Failed to compile transaction message for Squads vault transaction")]
+    InvalidTransactionMessage,
+    #[msg("Base mint and quote mint must be different")]
+    InvalidMint,
 }

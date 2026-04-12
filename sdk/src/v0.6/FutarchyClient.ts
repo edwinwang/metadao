@@ -16,6 +16,10 @@ import { InitializeDaoParams, UpdateDaoParams } from "./types/index.js";
 // import { Autocrat, IDL as AutocratIDL } from "./types/autocrat.js";
 import { Futarchy, IDL as FutarchyIDL } from "./types/futarchy.js";
 import {
+  Futarchy as v0_6_0_futarchy,
+  IDL as v0_6_0_futarchyIDL,
+} from "./types/v0.6.0-futarchy.js";
+import {
   ConditionalVault,
   IDL as ConditionalVaultIDL,
 } from "./types/conditional_vault.js";
@@ -31,6 +35,12 @@ import {
   SQUADS_PROGRAM_CONFIG_TREASURY,
   SQUADS_PROGRAM_ID,
   USDC_DECIMALS,
+  SHARED_LIQUIDITY_MANAGER_PROGRAM_ID,
+  DAMM_V2_PROGRAM_ID,
+  DAMM_V2_POOL_AUTHORITY,
+  MAINNET_METEORA_CONFIG,
+  LAUNCHPAD_PROGRAM_ID,
+  METADAO_MULTISIG_VAULT,
 } from "./constants.js";
 import {
   DEFAULT_CU_PRICE,
@@ -57,10 +67,11 @@ import { Dao, Proposal } from "./types/index.js";
 
 import * as multisig from "@sqds/multisig";
 import { TransactionMessage } from "@solana/web3.js";
+import { getStakeAddr } from "./utils/index.js";
 
 export type CreateClientParams = {
   provider: AnchorProvider;
-  autocratProgramId?: PublicKey;
+  futarchyProgramId?: PublicKey;
   conditionalVaultProgramId?: PublicKey;
 };
 
@@ -71,20 +82,27 @@ export type ProposalVaults = {
 
 export class FutarchyClient {
   public readonly provider: AnchorProvider;
-  public readonly autocrat: Program<Futarchy>;
+  public readonly futarchy: Program<Futarchy>;
+  // useful for parsing old events
+  public readonly v0_6_0_futarchy: Program<v0_6_0_futarchy>;
   public readonly vaultClient: ConditionalVaultClient;
   public readonly luts: AddressLookupTableAccount[];
 
   constructor(
     provider: AnchorProvider,
-    autocratProgramId: PublicKey,
+    futarchyProgramId: PublicKey,
     conditionalVaultProgramId: PublicKey,
     luts: AddressLookupTableAccount[],
   ) {
     this.provider = provider;
-    this.autocrat = new Program<Futarchy>(
+    this.futarchy = new Program<Futarchy>(
       FutarchyIDL,
-      autocratProgramId,
+      futarchyProgramId,
+      provider,
+    );
+    this.v0_6_0_futarchy = new Program<v0_6_0_futarchy>(
+      v0_6_0_futarchyIDL,
+      futarchyProgramId,
       provider,
     );
     this.vaultClient = ConditionalVaultClient.createClient({
@@ -94,11 +112,12 @@ export class FutarchyClient {
     this.luts = luts;
   }
 
-  public static createClient(
-    createAutocratClientParams: CreateClientParams,
-  ): FutarchyClient {
-    let { provider, autocratProgramId, conditionalVaultProgramId } =
-      createAutocratClientParams;
+  public static createClient(params: CreateClientParams): FutarchyClient {
+    let {
+      provider,
+      futarchyProgramId: autocratProgramId,
+      conditionalVaultProgramId,
+    } = params;
 
     const luts: AddressLookupTableAccount[] = [];
 
@@ -111,33 +130,33 @@ export class FutarchyClient {
   }
 
   getProgramId(): PublicKey {
-    return this.autocrat.programId;
+    return this.futarchy.programId;
   }
 
   async getProposal(proposal: PublicKey): Promise<Proposal> {
-    return this.autocrat.account.proposal.fetch(proposal);
+    return this.futarchy.account.proposal.fetch(proposal);
   }
 
   async getDao(dao: PublicKey): Promise<Dao> {
-    return this.autocrat.account.dao.fetch(dao);
+    return this.futarchy.account.dao.fetch(dao);
   }
 
   async fetchProposal(proposal: PublicKey): Promise<Proposal | null> {
-    return this.autocrat.account.proposal.fetchNullable(proposal);
+    return this.futarchy.account.proposal.fetchNullable(proposal);
   }
 
   async fetchDao(dao: PublicKey): Promise<Dao | null> {
-    return this.autocrat.account.dao.fetchNullable(dao);
+    return this.futarchy.account.dao.fetchNullable(dao);
   }
 
   async deserializeProposal(
     accountInfo: AccountInfo<Buffer>,
   ): Promise<Proposal> {
-    return this.autocrat.coder.accounts.decode("proposal", accountInfo.data);
+    return this.futarchy.coder.accounts.decode("proposal", accountInfo.data);
   }
 
   async deserializeDao(accountInfo: AccountInfo<Buffer>): Promise<Dao> {
-    return this.autocrat.coder.accounts.decode("dao", accountInfo.data);
+    return this.futarchy.coder.accounts.decode("dao", accountInfo.data);
   }
 
   getProposalPdas(
@@ -248,7 +267,7 @@ export class FutarchyClient {
       createKey: dao,
     })[0];
 
-    return this.autocrat.methods.initializeDao(params).accounts({
+    return this.futarchy.methods.initializeDao(params).accounts({
       dao,
       baseMint,
       quoteMint,
@@ -287,7 +306,7 @@ export class FutarchyClient {
       failQuoteMint,
     } = this.getProposalPdas(proposal, baseMint, quoteMint, dao);
 
-    return this.autocrat.methods
+    return this.futarchy.methods
       .launchProposal()
       .accounts({
         proposal,
@@ -342,7 +361,7 @@ export class FutarchyClient {
     minOutputAmount?: BN;
     trader?: PublicKey;
   }) {
-    return this.autocrat.methods
+    return this.futarchy.methods
       .spotSwap({
         swapType: swapType === "buy" ? { buy: {} } : { sell: {} },
         inputAmount,
@@ -404,7 +423,7 @@ export class FutarchyClient {
       this.getProgramId(),
     )[0];
 
-    return this.autocrat.methods
+    return this.futarchy.methods
       .provideLiquidity({
         quoteAmount,
         maxBaseAmount,
@@ -499,7 +518,7 @@ export class FutarchyClient {
       );
     }
 
-    return this.autocrat.methods
+    return this.futarchy.methods
       .conditionalSwap({
         market: market == "pass" ? { pass: {} } : { fail: {} },
         swapType: swapType == "buy" ? { buy: {} } : { sell: {} },
@@ -625,7 +644,7 @@ export class FutarchyClient {
   ): Promise<PublicKey> {
     const storedDao = await this.getDao(dao);
 
-    let [proposal] = getProposalAddr(this.autocrat.programId, squadsProposal);
+    let [proposal] = getProposalAddr(this.futarchy.programId, squadsProposal);
 
     await this.vaultClient.initializeQuestion(
       sha256(`Will ${proposal} pass?/FAIL/PASS`),
@@ -673,7 +692,7 @@ export class FutarchyClient {
     question: PublicKey,
     proposer: PublicKey = this.provider.publicKey,
   ) {
-    let [proposal] = getProposalAddr(this.autocrat.programId, squadsProposal);
+    let [proposal] = getProposalAddr(this.futarchy.programId, squadsProposal);
     const {
       baseVault,
       quoteVault,
@@ -688,7 +707,7 @@ export class FutarchyClient {
       this.getProgramId(),
     );
 
-    return this.autocrat.methods
+    return this.futarchy.methods
       .initializeProposal()
       .accounts({
         question,
@@ -787,7 +806,7 @@ export class FutarchyClient {
 
     const [vaultEventAuthority] = getEventAuthorityAddr(vaultProgramId);
 
-    return this.autocrat.methods
+    return this.futarchy.methods
       .finalizeProposal()
       .accounts({
         proposal,
@@ -849,7 +868,7 @@ export class FutarchyClient {
       index: 0,
     })[0];
 
-    return this.autocrat.methods.updateDao(params).accounts({
+    return this.futarchy.methods.updateDao(params).accounts({
       dao,
       squadsMultisigVault,
     });
@@ -870,12 +889,9 @@ export class FutarchyClient {
     staker?: PublicKey;
     payer?: PublicKey;
   }) {
-    const stakeAccount = PublicKey.findProgramAddressSync(
-      [Buffer.from("stake"), proposal.toBuffer(), staker.toBuffer()],
-      this.getProgramId(),
-    )[0];
+    const stakeAccount = getStakeAddr(FUTARCHY_PROGRAM_ID, proposal, staker)[0];
 
-    return this.autocrat.methods
+    return this.futarchy.methods
       .stakeToProposal({ amount })
       .accounts({
         proposal,
@@ -913,17 +929,50 @@ export class FutarchyClient {
       ]);
   }
 
+  unstakeFromProposalIx({
+    proposal,
+    dao,
+    baseMint,
+    amount,
+    staker = this.provider.publicKey,
+  }: {
+    proposal: PublicKey;
+    dao: PublicKey;
+    baseMint: PublicKey;
+    amount: BN;
+    staker?: PublicKey;
+  }) {
+    const stakeAccount = getStakeAddr(FUTARCHY_PROGRAM_ID, proposal, staker)[0];
+
+    return this.futarchy.methods.unstakeFromProposal({ amount }).accounts({
+      proposal,
+      dao,
+      stakerBaseAccount: getAssociatedTokenAddressSync(baseMint, staker, true),
+      proposalBaseAccount: getAssociatedTokenAddressSync(
+        baseMint,
+        proposal,
+        true,
+      ),
+      stakeAccount,
+      staker,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    });
+  }
+
   collectFeesIx({
     dao,
     baseMint,
     quoteMint,
     baseTokenAccount = getAssociatedTokenAddressSync(
       baseMint,
-      this.provider.publicKey,
+      METADAO_MULTISIG_VAULT,
+      true,
     ),
     quoteTokenAccount = getAssociatedTokenAddressSync(
       quoteMint,
-      this.provider.publicKey,
+      METADAO_MULTISIG_VAULT,
+      true,
     ),
   }: {
     dao: PublicKey;
@@ -932,13 +981,150 @@ export class FutarchyClient {
     baseTokenAccount?: PublicKey;
     quoteTokenAccount?: PublicKey;
   }) {
-    return this.autocrat.methods.collectFees().accounts({
+    return this.futarchy.methods.collectFees().accounts({
       dao,
       admin: this.provider.publicKey,
       ammBaseVault: getAssociatedTokenAddressSync(baseMint, dao, true),
       ammQuoteVault: getAssociatedTokenAddressSync(quoteMint, dao, true),
       baseTokenAccount,
       quoteTokenAccount,
+    });
+  }
+
+  sponsorProposalIx({
+    proposal,
+    dao,
+    teamAddress = this.provider.publicKey,
+  }: {
+    proposal: PublicKey;
+    dao: PublicKey;
+    teamAddress?: PublicKey;
+  }) {
+    return this.futarchy.methods.sponsorProposal().accounts({
+      proposal,
+      dao,
+      teamAddress,
+    });
+  }
+
+  collectMeteoraDammFeesIx({
+    dao,
+    baseMint,
+    quoteMint = MAINNET_USDC,
+    transactionIndex,
+    meteoraConfig = MAINNET_METEORA_CONFIG,
+    admin = this.provider.publicKey,
+  }: {
+    dao: PublicKey;
+    baseMint: PublicKey;
+    quoteMint?: PublicKey;
+    transactionIndex: bigint;
+    meteoraConfig?: PublicKey;
+    admin?: PublicKey;
+  }) {
+    // Squads accounts
+    const multisigPda = multisig.getMultisigPda({ createKey: dao })[0];
+    const squadsMultisigVault = multisig.getVaultPda({
+      multisigPda,
+      index: 0,
+    })[0];
+    const squadsMultisigVaultTransaction = multisig.getTransactionPda({
+      multisigPda,
+      index: transactionIndex,
+    })[0];
+    const squadsMultisigProposal = multisig.getProposalPda({
+      multisigPda,
+      transactionIndex,
+    })[0];
+
+    // Token accounts for receiving fees
+    const baseTokenAccount = getAssociatedTokenAddressSync(
+      baseMint,
+      METADAO_MULTISIG_VAULT,
+      true,
+    );
+    const quoteTokenAccount = getAssociatedTokenAddressSync(
+      quoteMint,
+      METADAO_MULTISIG_VAULT,
+      true,
+    );
+
+    // Helper function to sort mints for Meteora pool PDA
+    const sortMints = (
+      mint1: PublicKey,
+      mint2: PublicKey,
+    ): [Buffer, Buffer] => {
+      const buf1 = mint1.toBuffer();
+      const buf2 = mint2.toBuffer();
+      if (Buffer.compare(buf1, buf2) > 0) {
+        return [buf1, buf2];
+      }
+      return [buf2, buf1];
+    };
+
+    const [sortedMint1, sortedMint2] = sortMints(baseMint, quoteMint);
+
+    // Meteora DAMM accounts
+    const [pool] = PublicKey.findProgramAddressSync(
+      [Buffer.from("pool"), meteoraConfig.toBuffer(), sortedMint1, sortedMint2],
+      DAMM_V2_PROGRAM_ID,
+    );
+
+    const [positionNftMint] = PublicKey.findProgramAddressSync(
+      [Buffer.from("position_nft_mint"), baseMint.toBuffer()],
+      LAUNCHPAD_PROGRAM_ID,
+    );
+
+    const [positionNftAccount] = PublicKey.findProgramAddressSync(
+      [Buffer.from("position_nft_account"), positionNftMint.toBuffer()],
+      DAMM_V2_PROGRAM_ID,
+    );
+
+    const [position] = PublicKey.findProgramAddressSync(
+      [Buffer.from("position"), positionNftMint.toBuffer()],
+      DAMM_V2_PROGRAM_ID,
+    );
+
+    const [tokenAVault] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_vault"), baseMint.toBuffer(), pool.toBuffer()],
+      DAMM_V2_PROGRAM_ID,
+    );
+
+    const [tokenBVault] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_vault"), quoteMint.toBuffer(), pool.toBuffer()],
+      DAMM_V2_PROGRAM_ID,
+    );
+
+    const [dammV2EventAuthority] = getEventAuthorityAddr(DAMM_V2_PROGRAM_ID);
+
+    return this.futarchy.methods.collectMeteoraDammFees().accounts({
+      dao,
+      admin,
+      squadsMultisig: multisigPda,
+      squadsMultisigVault,
+      squadsMultisigVaultTransaction,
+      squadsMultisigProposal,
+      squadsMultisigPermissionlessAccount: PERMISSIONLESS_ACCOUNT.publicKey,
+      meteoraClaimPositionFeesAccounts: {
+        dammV2Program: DAMM_V2_PROGRAM_ID,
+        dammV2EventAuthority,
+        poolAuthority: DAMM_V2_POOL_AUTHORITY,
+        pool,
+        position,
+        tokenAAccount: baseTokenAccount,
+        tokenBAccount: quoteTokenAccount,
+        tokenAVault,
+        tokenBVault,
+        tokenAMint: baseMint,
+        tokenBMint: quoteMint,
+        positionNftAccount,
+        owner: squadsMultisigVault,
+        tokenAProgram: TOKEN_PROGRAM_ID,
+        tokenBProgram: TOKEN_PROGRAM_ID,
+      },
+      systemProgram: SystemProgram.programId,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      squadsProgram: SQUADS_PROGRAM_ID,
     });
   }
 }

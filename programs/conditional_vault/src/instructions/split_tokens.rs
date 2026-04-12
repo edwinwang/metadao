@@ -1,6 +1,14 @@
 use super::*;
 
 impl<'info, 'c: 'info> InteractWithVault<'info> {
+    pub fn validate_split_tokens(&self) -> Result<()> {
+        require!(
+            !self.question.is_resolved(),
+            VaultError::QuestionAlreadyResolved
+        );
+        Ok(())
+    }
+
     pub fn handle_split_tokens(ctx: Context<'_, '_, 'c, 'info, Self>, amount: u64) -> Result<()> {
         let accs = &ctx.accounts;
 
@@ -98,10 +106,7 @@ impl<'info, 'c: 'info> InteractWithVault<'info> {
 
         let clock = Clock::get()?;
         emit_cpi!(SplitTokensEvent {
-            common: CommonFields {
-                slot: clock.slot,
-                unix_timestamp: clock.unix_timestamp,
-            },
+            common: CommonFields::new(&clock),
             user: ctx.accounts.authority.key(),
             vault: ctx.accounts.vault.key(),
             amount,
